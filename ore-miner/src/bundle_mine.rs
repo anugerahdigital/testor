@@ -138,10 +138,6 @@ impl Miner {
                 )
                 .await;
 
-            if mining_duration > time_to_next_epoch {
-                warn!("mining took too long, waiting for next epoch");
-                wait_continue!(time_to_next_epoch.as_millis() as u64);
-            }
             drop(_permit);
 
             debug!(

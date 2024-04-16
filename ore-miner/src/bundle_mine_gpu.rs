@@ -179,17 +179,12 @@ impl Miner {
             .mine_hashes_gpu(&treasury.difficulty.into(), &hash_and_pubkey)
             .await;
 
-        if mining_duration > time_to_next_epoch {
-            warn!("mining took too long, waiting for next epoch");
-            wait_return!(time_to_next_epoch.as_millis() as u64, Some(batch));
-        } else {
-            info!(
-                accounts = Accounts::size() * batch.len(),
-                accounts.idle = idle_accounts,
-                mining = format_duration!(mining_duration),
-                "mining done"
-            );
-        }
+        info!(
+            accounts = Accounts::size() * batch.len(),
+            accounts.idle = idle_accounts,
+            mining = format_duration!(mining_duration),
+            "mining done"
+        );
 
         let available_bus = Self::find_buses(buses, treasury.reward_rate.saturating_mul(all_pubkey.len() as u64 + 20))
             .into_iter()
