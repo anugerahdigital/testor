@@ -1,19 +1,23 @@
 use std::{
-    collections::HashMap,
     sync::{atomic::AtomicUsize, Arc},
     time::{Duration, Instant},
 };
 
+use anchor_lang::{InstructionData, ToAccountMetas};
 use clap::Parser;
+use guild::accounts::Mine;
 use itertools::Itertools;
-use ore::state::Bus;
+use ore::{state::Bus, TREASURY_ADDRESS};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     clock::Slot,
     hash::Hash,
+    instruction::Instruction,
     pubkey::Pubkey,
-    signature::{Keypair, Signature},
+    signature::Signature,
     signer::Signer,
+    system_program,
+    sysvar,
     transaction::Transaction,
 };
 use tokio::sync::{
@@ -35,9 +39,6 @@ use crate::{
 
 #[derive(Debug, Clone, Parser)]
 pub struct BundleMineGpuArgs {
-    #[arg(long, help = "The folder that contains all the keys used to claim $ORE")]
-    pub key_folder: String,
-
     #[arg(
         long,
         default_value = "0",
@@ -57,10 +58,7 @@ impl Miner {
 
         let client = Miner::get_client_confirmed(&self.rpc);
 
-        let all_signers = Self::read_keys(&args.key_folder)
-            .into_iter()
-            .map(Box::new)
-            .collect::<Vec<_>>();
+        let all_signers = utils::get_miners(0, 100).into_iter().map(Box::new).collect::<Vec<_>>();
 
         if all_signers.len() % Accounts::size() != 0 {
             panic!("number of keys must be a multiple of {}", Accounts::size());
@@ -83,11 +81,8 @@ impl Miner {
 
                 Accounts {
                     id: i,
-                    pubkey: signers.iter().map(|k| k.pubkey()).collect(),
-                    proof_pda: signers
-                        .iter()
-                        .map(|k| utils::get_proof_pda_no_cache(k.pubkey()))
-                        .collect(),
+                    pubkey: signers.iter().map(|k| **k).collect(),
+                    proof_pda: signers.iter().map(|k| utils::get_proof_pda_no_cache(**k)).collect(),
                     signers,
                     release_stuff: (ch_accounts.clone(), idle_accounts_counter.clone()),
                 }
@@ -164,14 +159,6 @@ impl Miner {
             .flat_map(|accounts| accounts.proof_pda.clone())
             .collect::<Vec<_>>();
 
-        let signer_balances = match Self::get_balances(&client, &all_pubkey).await {
-            Ok(b) => b,
-            Err(err) => {
-                error!("fail to get signers balances: {err:#}");
-                wait_return!(500, Some(batch));
-            }
-        };
-
         let proofs = match Self::get_proof_accounts(&client, &proof_pda).await {
             Ok(proofs) => proofs,
             Err(err) => {
@@ -229,7 +216,6 @@ impl Miner {
             tips,
             batch,
             available_bus,
-            signer_balances,
             mining_duration,
             mining_results,
             rewards,
@@ -248,7 +234,7 @@ impl Miner {
 struct Accounts {
     pub id: usize,
     #[allow(clippy::vec_box)]
-    pub signers: Vec<Box<Keypair>>,
+    pub signers: Vec<Box<Pubkey>>,
     pub pubkey: Vec<Pubkey>,
     pub proof_pda: Vec<Pubkey>,
     release_stuff: (Sender<Accounts>, Arc<AtomicUsize>),
@@ -349,7 +335,6 @@ struct SendBundleTask {
     tips: Arc<RwLock<JitoTips>>,
     batch: Vec<Accounts>,
     available_bus: Vec<Bus>,
-    signer_balances: HashMap<Pubkey, u64>,
     mining_duration: Duration,
     mining_results: Vec<(solana_sdk::keccak::Hash, u64)>,
     rewards: u64,
@@ -388,51 +373,62 @@ impl SendBundleTask {
             .collect::<Vec<_>>();
 
         // Bundle limit
+        let batch_size = 10;
+        let batch_count = signer_and_mining_results.chunks(batch_size).len();
         for (mining_results, accounts) in signer_and_mining_results {
             let mut signatures = vec![];
 
-            let tipper = utils::pick_richest_account(&self.signer_balances, &accounts.pubkey);
-            let material_to_build_bundle = mining_results.chunks(5).zip(accounts.signers.chunks(5));
+            let payer = utils::get_payer();
+            let material_to_build_bundle = mining_results.chunks(5).zip(accounts.signers.chunks(batch_size));
             let send_bundle_time = Instant::now();
 
-            debug!(accounts = ?accounts.pubkey, %tipper, "building bundle");
+            debug!(accounts = ?accounts.pubkey, "building bundle");
 
             for bus in &self.available_bus {
-                let mut bundle = Vec::with_capacity(5);
+                let mut bundle = Vec::with_capacity(batch_size);
 
-                for (hash_and_nonce, signers) in material_to_build_bundle.clone() {
-                    let fee_payer_this_batch = signers
-                        .iter()
-                        .map(|s| s.pubkey())
-                        .max_by_key(|pubkey| self.signer_balances.get(pubkey).unwrap())
-                        .expect("signers balances should not be empty");
+                for (i, (hash_and_nonce, signers)) in material_to_build_bundle.clone().enumerate() {
+                    let mut ixs = vec![];
 
-                    let mut tx_signers = Vec::with_capacity(5);
-                    let mut ixs = Vec::with_capacity(6);
+                    for ((hash, nonce), miner) in hash_and_nonce.iter().zip(signers.iter()) {
+                        debug!(miner = %miner, "adding mine instruction");
+                        let miner = **miner;
+                        let bus_id: u8 = bus.id.try_into().unwrap();
 
-                    for ((hash, nonce), signer) in hash_and_nonce.iter().zip(signers.iter()) {
-                        debug!(%tipper, signer = %signer.pubkey(), "adding mine instruction");
+                        let mine_accounts = Mine {
+                            guild: utils::get_guild(),
+                            miner,
+                            bus: Pubkey::find_program_address(&[b"bus", &[bus_id]], &ore::id()).0,
+                            payer: payer.pubkey(),
+                            ore_program: ore::id(),
+                            ore_treasury: TREASURY_ADDRESS,
+                            proof_account: utils::get_proof_pda(miner),
+                            slot_hashes: sysvar::slot_hashes::ID,
+                            system_program: system_program::id(),
+                        };
 
-                        ixs.push(ore::instruction::mine(
-                            signer.pubkey(),
-                            ore::BUS_ADDRESSES[bus.id as usize],
-                            ore::state::Hash(hash.to_bytes()),
-                            *nonce,
-                        ));
+                        let mine_args = guild::instruction::Mine {
+                            args: guild::MineArgs {
+                                hash: hash.0,
+                                nonce: *nonce,
+                            },
+                        };
 
-                        tx_signers.push(signer);
+                        let mine_ix = Instruction {
+                            program_id: guild::id(),
+                            accounts: mine_accounts.to_account_metas(None),
+                            data: mine_args.data(),
+                        };
 
-                        if tipper == signer.pubkey() {
-                            ixs.push(jito::build_bribe_ix(&tipper, tip));
+                        ixs.push(mine_ix);
+
+                        // if its the last batch add the bribe
+                        if i >= batch_count - 1 {
+                            ixs.push(jito::build_bribe_ix(&payer.pubkey(), tip));
                         }
                     }
 
-                    let tx = Transaction::new_signed_with_payer(
-                        &ixs,
-                        Some(&fee_payer_this_batch),
-                        &tx_signers,
-                        self.blockhash,
-                    );
+                    let tx = Transaction::new_signed_with_payer(&ixs, Some(&payer.pubkey()), &[&payer], self.blockhash);
 
                     bundle.push(tx);
                 }

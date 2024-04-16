@@ -40,7 +40,8 @@ tracing = { version = "0.1.26", features = ["log"] }
 futures-util = "0.3.30"
 itertools = "0.12.1"
 log = "0.4.21"
-
+guild = { path = "../programs/programs/guild", features = ["no-entrypoint"] }
+anchor-lang = "0.29.0"
 
 [features]
 benchmark = []

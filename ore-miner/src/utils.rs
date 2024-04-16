@@ -1,7 +1,11 @@
-use std::{collections::HashMap, env, path::PathBuf};
+use std::{collections::HashMap, env, path::PathBuf, str::FromStr};
 
 use cached::proc_macro::cached;
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
+use solana_sdk::{
+    commitment_config::CommitmentConfig,
+    pubkey::Pubkey,
+    signature::{read_keypair_file, Keypair, Signature},
+};
 use solana_transaction_status::TransactionStatus;
 
 #[cached]
@@ -49,11 +53,28 @@ pub fn find_landed_txs(signatures: &[Signature], statuses: Vec<Option<Transactio
     landed_tx
 }
 
-pub fn pick_richest_account(account_balances: &HashMap<Pubkey, u64>, accounts: &[Pubkey]) -> Pubkey {
-    *accounts
-        .iter()
-        .max_by_key(|pubkey| account_balances.get(pubkey).unwrap())
-        .expect("accounts should not be empty")
+pub fn get_payer() -> Keypair {
+    read_keypair_file("payer.json").unwrap()
+}
+
+pub fn get_guild() -> Pubkey {
+    Pubkey::from_str("ACrBnqZezHPuTQXrxXgAe2NWSAD25QLBFf7Eh2uexKe4").unwrap()
+}
+
+pub fn get_miners(start_index: u64, count: u64) -> Vec<Pubkey> {
+    let mut miners: Vec<Pubkey> = vec![];
+
+    for i in start_index..start_index + count {
+        miners.push(get_miner(i));
+    }
+
+    miners
+}
+
+fn get_miner(id: u64) -> Pubkey {
+    let miner_prefix: &[u8] = b"miner";
+    let miner = Pubkey::find_program_address(&[miner_prefix, get_guild().as_ref(), &id.to_le_bytes()], &guild::ID).0;
+    miner
 }
 
 #[macro_export]

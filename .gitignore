@@ -6,3 +6,4 @@ flamegraph.svg
 *.json
 target/
 *.zip
+.anchor/

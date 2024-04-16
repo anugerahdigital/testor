@@ -1,0 +1,71 @@
+[toolchain]
+
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+guild = "J3P4ApJVcj6aJ3JGE2WGLpaHBc87QWRk9Gx584Wq1kaD"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+[test.validator]
+bind_address = "127.0.0.1"
+url = "https://evocative-billowing-sound.solana-mainnet.quiknode.pro/61b52eadc6d84e36abc8073209f1bcbe438ca591/"
+ledger = ".anchor/test-ledger"
+rpc_port = 8899
+
+## ore mining program
+#[[test.validator.clone]]
+#address = "mineRHF5r6S7HyD9SppBfVMXMavDkJsxwGesEvxZr2A"
+[[test.genesis]]
+address = "mineRHF5r6S7HyD9SppBfVMXMavDkJsxwGesEvxZr2A"
+program = "./ore.so"
+
+# ore mint
+[[test.validator.clone]]
+address = "oreoN2tQbHXVaZsr3pf66A48miqcBXCDJozganhEJgz"
+
+# ore mint metadata
+[[test.validator.clone]]
+address = "2nXZSxfjELuRatcoY64yHdFLZFi3mtesxobHmsoU3Dag"
+
+# ore treasury
+[[test.validator.clone]]
+address = "FTap9fv2GPpWGqrLj3o4c9nHH7p36ih7NbSWHnrkQYqa"
+
+#
+# buses
+#
+
+[[test.validator.clone]]
+address = "9ShaCzHhQNvH8PLfGyrJbB8MeKHrDnuPMLnUDLJ2yMvz"
+
+[[test.validator.clone]]
+address = "4Cq8685h9GwsaD5ppPsrtfcsk3fum8f9UP4SPpKSbj2B"
+
+[[test.validator.clone]]
+address = "8L1vdGdvU3cPj9tsjJrKVUoBeXYvAzJYhExjTYHZT7h7"
+
+[[test.validator.clone]]
+address = "JBdVURCrUiHp4kr7srYtXbB7B4CwurUt1Bfxrxw6EoRY"
+
+[[test.validator.clone]]
+address = "DkmVBWJ4CLKb3pPHoSwYC2wRZXKKXLD2Ued5cGNpkWmr"
+
+[[test.validator.clone]]
+address = "9uLpj2ZCMqN6Yo1vV6yTkP6dDiTTXmeM5K3915q5CHyh"
+
+[[test.validator.clone]]
+address = "EpcfjBs8eQ4unSMdowxyTE8K3vVJ3XUnEr5BEWvSX7RB"
+
+[[test.validator.clone]]
+address = "Ay5N9vKS2Tyo2M9u9TFt59N1XbxdW93C7UrFZW3h8sMC"

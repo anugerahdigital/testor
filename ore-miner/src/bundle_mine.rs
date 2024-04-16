@@ -3,28 +3,34 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anchor_lang::{InstructionData, ToAccountMetas};
 use clap::Parser;
+use guild::accounts::Mine;
 use itertools::Itertools;
-use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+use ore::TREASURY_ADDRESS;
+use solana_sdk::{
+    instruction::Instruction,
+    pubkey::Pubkey,
+    signature::Keypair,
+    signer::Signer,
+    system_program,
+    sysvar,
+    transaction::Transaction,
+};
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    constant,
-    constant::FEE_PER_SIGNER,
+    constant::{self, FEE_PER_SIGNER},
     format_duration,
     format_reward,
-    jito,
-    jito::{subscribe_jito_tips, JitoTips},
-    utils,
+    jito::{self, subscribe_jito_tips, JitoTips},
+    utils::{self, get_proof_pda},
     wait_continue,
     Miner,
 };
 #[derive(Debug, Clone, Parser)]
 pub struct BundleMineArgs {
-    #[arg(long, help = "The folder that contains all the keys used to claim $ORE")]
-    pub key_folder: String,
-
     #[arg(long, default_value = "4", help = "Number of threads to use for nonce calculation")]
     pub threads: usize,
 
@@ -48,23 +54,20 @@ pub struct BundleMineArgs {
 
 impl Miner {
     pub async fn bundle_mine(&self, args: &BundleMineArgs) {
-        let signer = Self::read_keys(&args.key_folder);
+        let signer = Self::get_miners(0, 100);
         let semaphore = Arc::new(Semaphore::new(args.concurrency));
         let reward_counter = Arc::new(AtomicU64::new(0));
         let tips = Arc::new(RwLock::new(JitoTips::default()));
 
         subscribe_jito_tips(tips.clone()).await;
 
-        for (i, keys) in signer.chunks(25).enumerate() {
+        for (i, keys) in signer.chunks(50).enumerate() {
             let miner = self.clone();
             let args = args.clone();
             let semaphore = semaphore.clone();
             let reward_counter = reward_counter.clone();
             let tips = tips.clone();
-            let signers = keys
-                .iter()
-                .map(|key| Arc::new(key.insecure_clone()))
-                .collect::<Vec<_>>();
+            let signers = keys.iter().map(|key| Arc::new(key.clone())).collect::<Vec<_>>();
 
             tokio::spawn(async move {
                 miner
@@ -87,7 +90,7 @@ impl Miner {
         self,
         miner: usize,
         args: BundleMineArgs,
-        signers: Vec<Arc<Keypair>>,
+        signers: Vec<Arc<Pubkey>>,
         semaphore: Arc<Semaphore>,
         reward_counter: Arc<AtomicU64>,
         tips: Arc<RwLock<JitoTips>>,
@@ -97,21 +100,9 @@ impl Miner {
         let client = Miner::get_client_confirmed(&self.rpc);
         let mut tip = self.priority_fee.expect("jito tip should set");
 
-        let proof_pda = signers
-            .iter()
-            .map(|k| utils::get_proof_pda_no_cache(k.pubkey()))
-            .collect_vec();
+        let proof_pda = signers.iter().map(|k| utils::get_proof_pda_no_cache(**k)).collect_vec();
 
         loop {
-            let signers_balances =
-                match Self::get_balances(&client, &signers.iter().map(|k| k.pubkey()).collect::<Vec<_>>()).await {
-                    Ok(b) => b,
-                    Err(err) => {
-                        error!(miner, "fail to get signers balances: {err:#}");
-                        continue;
-                    }
-                };
-
             let now = Instant::now();
             let _permit = semaphore.clone().acquire_owned().await;
             let mining_queue_duration = now.elapsed();
@@ -142,7 +133,7 @@ impl Miner {
                     &signers
                         .iter()
                         .zip(proofs.iter())
-                        .map(|(signer, proof)| (proof.hash.into(), signer.pubkey()))
+                        .map(|(signer, proof)| (proof.hash.into(), **signer))
                         .collect::<Vec<_>>(),
                 )
                 .await;
@@ -198,42 +189,56 @@ impl Miner {
                     let mut bundle = Vec::with_capacity(5);
                     let mut fee_payer_and_cost = vec![];
 
-                    let bundle_tipper = utils::pick_richest_account(
-                        &signers_balances,
-                        &signers.iter().map(|s| s.pubkey()).collect_vec(),
-                    );
+                    let payer = utils::get_payer();
 
-                    for batch in signer_and_mining_results.chunks(5) {
-                        let fee_payer_this_batch = utils::pick_richest_account(
-                            &signers_balances,
-                            &batch.iter().map(|s| s.0.pubkey()).collect_vec(),
-                        );
-
-                        let mut tx_signers = Vec::with_capacity(batch.len());
+                    let batch_size = 10;
+                    let batch_count = signer_and_mining_results.chunks(batch_size).len();
+                    for (i, batch) in signer_and_mining_results.chunks(batch_size).enumerate() {
                         let mut ixs = Vec::with_capacity(batch.len());
 
-                        for (signer, (hash, nonce)) in batch {
-                            ixs.push(ore::instruction::mine(
-                                signer.pubkey(),
-                                ore::BUS_ADDRESSES[bus.id as usize],
-                                (*hash).into(),
-                                *nonce,
-                            ));
+                        for (miner, (hash, nonce)) in batch {
+                            let miner = ***miner;
+                            let bus_id: u8 = bus.id.try_into().unwrap();
 
-                            tx_signers.push(*signer);
+                            let mine_accounts = Mine {
+                                guild: utils::get_guild(),
+                                miner,
+                                bus: Pubkey::find_program_address(&[b"bus", &[bus_id]], &ore::id()).0,
+                                payer: payer.pubkey(),
+                                ore_program: ore::id(),
+                                ore_treasury: TREASURY_ADDRESS,
+                                proof_account: get_proof_pda(miner),
+                                slot_hashes: sysvar::slot_hashes::ID,
+                                system_program: system_program::id(),
+                            };
 
-                            if bundle_tipper == signer.pubkey() {
-                                ixs.push(jito::build_bribe_ix(&bundle_tipper, tip));
+                            let mine_args = guild::instruction::Mine {
+                                args: guild::MineArgs {
+                                    hash: hash.0,
+                                    nonce: *nonce,
+                                },
+                            };
+
+                            let mine_ix = Instruction {
+                                program_id: guild::id(),
+                                accounts: mine_accounts.to_account_metas(None),
+                                data: mine_args.data(),
+                            };
+
+                            ixs.push(mine_ix);
+
+                            // if its the last batch add the bribe
+                            if i >= batch_count - 1 {
+                                ixs.push(jito::build_bribe_ix(&payer.pubkey(), tip));
                             }
                         }
 
-                        let mut tx = Transaction::new_with_payer(&ixs, Some(&fee_payer_this_batch));
-                        tx.sign(&tx_signers, blockhash);
+                        let tx = Transaction::new_signed_with_payer(&ixs, Some(&payer.pubkey()), &[&payer], blockhash);
 
                         bundle.push(tx);
 
-                        let cost = FEE_PER_SIGNER * tx_signers.len() as u64 + tip;
-                        fee_payer_and_cost.push((fee_payer_this_batch, cost));
+                        let cost = FEE_PER_SIGNER * 1 as u64 + tip;
+                        fee_payer_and_cost.push((payer.insecure_clone(), cost));
                     }
 
                     (
@@ -253,21 +258,6 @@ impl Miner {
                         continue;
                     }
                 };
-
-                for (fee_payer, cost) in fee_payer_and_cost {
-                    let balance = match client.get_balance(&fee_payer).await {
-                        Ok(b) => b,
-                        Err(err) => {
-                            error!(miner, %fee_payer, "fail to get balance: {err:#}");
-                            continue;
-                        }
-                    };
-
-                    if balance < cost {
-                        error!(miner, %fee_payer, balance, cost, "insufficient balance for fee");
-                        continue;
-                    }
-                }
 
                 debug!(miner, ?bundle_id, ?signature, "bundle sent");
                 signatures.push(signature);

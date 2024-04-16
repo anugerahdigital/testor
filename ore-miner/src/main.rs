@@ -33,15 +33,10 @@ use solana_transaction_status::TransactionStatus;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, log};
 
-mod batch_transfer;
-mod benchmark_rpc;
 mod bundle_mine;
 mod bundle_mine_gpu;
-mod claim;
 mod constant;
-mod generate_wallet;
 mod jito;
-mod register;
 mod utils;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -50,14 +45,9 @@ async fn main() {
     let miner = Miner::parse();
 
     match &miner.command {
-        Command::Claim(args) => miner.claim(args).await,
         Command::BundleMine(args) => miner.bundle_mine(args).await,
         Command::BundleMineGpu(args) => miner.bundle_mine_gpu(args).await,
-        Command::Register(args) => miner.register(args).await,
-        Command::BenchmarkRpc(args) => miner.benchmark_rpc(args).await,
-        Command::BatchTransfer(args) => miner.batch_transfer(args).await,
         Command::JitoTipStream => miner.jito_tip_stream().await,
-        Command::GenerateWallet(args) => miner.generate_wallet(args),
     }
 }
 
@@ -75,14 +65,9 @@ pub struct Miner {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
-    Claim(crate::claim::ClaimArgs),
     BundleMine(crate::bundle_mine::BundleMineArgs),
     BundleMineGpu(crate::bundle_mine_gpu::BundleMineGpuArgs),
-    Register(crate::register::RegisterArgs),
-    BenchmarkRpc(crate::benchmark_rpc::BenchmarkRpcArgs),
     JitoTipStream,
-    GenerateWallet(crate::generate_wallet::GenerateWalletArgs),
-    BatchTransfer(crate::batch_transfer::BatchTransferArgs),
 }
 
 impl Miner {
@@ -100,15 +85,28 @@ impl Miner {
         ))
     }
 
-    pub fn read_keys(key_folder: &str) -> Vec<Keypair> {
-        fs::read_dir(key_folder)
-            .expect("Failed to read key folder")
-            .map(|entry| {
-                let path = entry.expect("Failed to read entry").path();
+    pub fn get_miners(start_index: u64, count: u64) -> Vec<Pubkey> {
+        let mut miners: Vec<Pubkey> = vec![];
 
-                Keypair::read_from_file(&path).unwrap_or_else(|_| panic!("Failed to read keypair from {:?}", path))
-            })
-            .collect::<Vec<_>>()
+        for i in start_index..start_index + count {
+            miners.push(Miner::get_miner(i));
+        }
+
+        miners
+    }
+
+    fn get_miner(id: u64) -> Pubkey {
+        let miner_prefix: &[u8] = b"miner";
+        let miner = Pubkey::find_program_address(
+            &[miner_prefix, Miner::get_guild().as_ref(), &id.to_le_bytes()],
+            &guild::ID,
+        )
+        .0;
+        miner
+    }
+
+    fn get_guild() -> Pubkey {
+        Pubkey::from_str("ACrBnqZezHPuTQXrxXgAe2NWSAD25QLBFf7Eh2uexKe4").unwrap()
     }
 
     pub async fn get_latest_blockhash_and_slot(client: &RpcClient) -> eyre::Result<(Slot, solana_sdk::hash::Hash)> {

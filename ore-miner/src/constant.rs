@@ -5,9 +5,6 @@ pub const FEE_PER_SIGNER: u64 = 5000;
 
 pub const SLOT_EXPIRATION: u64 = 151 + 5;
 
-pub const FETCH_ACCOUNT_LIMIT: usize = 100;
-pub const TRANSFER_BATCH_SIZE: usize = 21;
-
 pub const JITO_RECIPIENTS: [Pubkey; 8] = [
     pubkey!("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5"),
     pubkey!("HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe"),
