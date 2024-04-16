@@ -1837,7 +1837,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
- "ore-program 1.2.0",
+ "ore-program",
 ]
 
 [[package]]
@@ -2817,7 +2817,7 @@ dependencies = [
  "guild",
  "itertools 0.12.1",
  "log",
- "ore-program 1.2.1",
+ "ore-program",
  "rand 0.8.5",
  "reqwest 0.12.3",
  "serde",
@@ -2832,22 +2832,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tracing",
-]
-
-[[package]]
-name = "ore-program"
-version = "1.2.0"
-dependencies = [
- "bs58 0.5.1",
- "bytemuck",
- "mpl-token-metadata",
- "num_enum 0.7.2",
- "shank",
- "solana-program",
- "spl-associated-token-account 3.0.2",
- "spl-token",
- "static_assertions",
- "thiserror",
 ]
 
 [[package]]
